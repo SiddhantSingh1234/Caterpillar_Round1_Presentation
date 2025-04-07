@@ -57,7 +57,10 @@ class DepthDataset(Dataset):
             # if self.is_blender:
             #     depth = depth / 255.0  # <-- FIXED normalization
             # else:
-            depth = depth * self.depth_scale  # e.g., 0.1 for NYUv2
+            if self.is_blender:
+                depth = depth * 0.1 + 0.01
+            else:
+                depth = depth * self.depth_scale  # e.g., 0.1 for NYUv2
             
         return image, depth
 
@@ -159,6 +162,7 @@ def train(model, dataloader, optimizer, criterion, device):
         images, depths = images.to(device), depths.to(device)
         optimizer.zero_grad()
         outputs = model(images)
+        outputs = torch.clamp(outputs, min=0.001)
         loss = criterion(outputs, depths)
         # outputs = torch.clamp(outputs, min=1e-3, max=10.0)
         # depths = torch.clamp(depths, min=1e-3, max=10.0)
@@ -176,6 +180,56 @@ def train(model, dataloader, optimizer, criterion, device):
     return total_loss / len(dataloader), avg_metrics
 
 # ---- Visualization Function ----
+# def visualize_predictions(model, dataloader, device, num_samples=3, save_dir="visualizations"):
+#     os.makedirs(save_dir, exist_ok=True)
+#     model.eval()
+#     images, depths = next(iter(dataloader))
+#     images, depths = images.to(device), depths.to(device)
+#     with torch.no_grad():
+#         outputs = model(images)
+    
+#     for i in range(min(num_samples, len(images))):
+#         fig, axs = plt.subplots(2, 2, figsize=(12, 10))
+        
+#         # Original image
+#         axs[0, 0].imshow(images[i].permute(1, 2, 0).cpu())
+#         axs[0, 0].set_title('Input Image')
+        
+#         # Ground truth depth
+#         depth_vis = depths[i, 0].cpu()
+#         im1 = axs[0, 1].imshow(depth_vis, cmap='gray')
+#         axs[0, 1].set_title('Ground Truth')
+#         fig.colorbar(im1, ax=axs[0, 1], label='Depth Value')
+        
+#         # Predicted depth
+#         pred_vis = outputs[i, 0].cpu()
+#         im2 = axs[1, 0].imshow(pred_vis, cmap='gray')
+#         axs[1, 0].set_title('Predicted Depth')
+#         fig.colorbar(im2, ax=axs[1, 0], label='Depth Value')
+        
+#         # Error map (absolute difference)
+#         error_map = torch.abs(pred_vis - depth_vis)
+#         im3 = axs[1, 1].imshow(error_map, cmap='hot')
+#         axs[1, 1].set_title('Absolute Error')
+#         fig.colorbar(im3, ax=axs[1, 1], label='Error Magnitude')
+        
+#         for ax in axs.flatten():
+#             ax.axis('off')
+        
+#         # Add metrics as text
+#         abs_rel = abs_relative_error(pred_vis.unsqueeze(0).unsqueeze(0), 
+#                                      depth_vis.unsqueeze(0).unsqueeze(0))
+#         mae = mean_absolute_error(pred_vis.unsqueeze(0).unsqueeze(0), 
+#                                   depth_vis.unsqueeze(0).unsqueeze(0))
+        
+#         plt.figtext(0.5, 0.01, f'Abs Rel Error: {abs_rel:.4f} | Mean Abs Error: {mae:.4f}', 
+#                    ha='center', fontsize=12, bbox={"facecolor":"orange", "alpha":0.2, "pad":5})
+        
+#         plt.tight_layout()
+#         plt.subplots_adjust(bottom=0.1)
+#         plt.savefig(os.path.join(save_dir, f'prediction_{i}.png'))
+#         plt.close()
+
 def visualize_predictions(model, dataloader, device, num_samples=3, save_dir="visualizations"):
     os.makedirs(save_dir, exist_ok=True)
     model.eval()
@@ -183,6 +237,12 @@ def visualize_predictions(model, dataloader, device, num_samples=3, save_dir="vi
     images, depths = images.to(device), depths.to(device)
     with torch.no_grad():
         outputs = model(images)
+        # Ensure positive predictions
+        outputs = torch.clamp(outputs, min=0.001)
+    
+    # Find global min and max for consistent colorbars
+    global_min = min(depths.min().item(), outputs.min().item())
+    global_max = max(depths.max().item(), outputs.max().item())
     
     for i in range(min(num_samples, len(images))):
         fig, axs = plt.subplots(2, 2, figsize=(12, 10))
@@ -191,15 +251,15 @@ def visualize_predictions(model, dataloader, device, num_samples=3, save_dir="vi
         axs[0, 0].imshow(images[i].permute(1, 2, 0).cpu())
         axs[0, 0].set_title('Input Image')
         
-        # Ground truth depth
+        # Ground truth depth - use global scale
         depth_vis = depths[i, 0].cpu()
-        im1 = axs[0, 1].imshow(depth_vis, cmap='gray')
+        im1 = axs[0, 1].imshow(depth_vis, cmap='gray', vmin=global_min, vmax=global_max)
         axs[0, 1].set_title('Ground Truth')
         fig.colorbar(im1, ax=axs[0, 1], label='Depth Value')
         
-        # Predicted depth
+        # Predicted depth - use same global scale
         pred_vis = outputs[i, 0].cpu()
-        im2 = axs[1, 0].imshow(pred_vis, cmap='gray')
+        im2 = axs[1, 0].imshow(pred_vis, cmap='gray', vmin=global_min, vmax=global_max)
         axs[1, 0].set_title('Predicted Depth')
         fig.colorbar(im2, ax=axs[1, 0], label='Depth Value')
         
@@ -214,12 +274,12 @@ def visualize_predictions(model, dataloader, device, num_samples=3, save_dir="vi
         
         # Add metrics as text
         abs_rel = abs_relative_error(pred_vis.unsqueeze(0).unsqueeze(0), 
-                                     depth_vis.unsqueeze(0).unsqueeze(0))
+                                    depth_vis.unsqueeze(0).unsqueeze(0))
         mae = mean_absolute_error(pred_vis.unsqueeze(0).unsqueeze(0), 
-                                  depth_vis.unsqueeze(0).unsqueeze(0))
+                                depth_vis.unsqueeze(0).unsqueeze(0))
         
         plt.figtext(0.5, 0.01, f'Abs Rel Error: {abs_rel:.4f} | Mean Abs Error: {mae:.4f}', 
-                   ha='center', fontsize=12, bbox={"facecolor":"orange", "alpha":0.2, "pad":5})
+                ha='center', fontsize=12, bbox={"facecolor":"orange", "alpha":0.2, "pad":5})
         
         plt.tight_layout()
         plt.subplots_adjust(bottom=0.1)
@@ -231,6 +291,37 @@ transform = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.ToTensor()
 ])
+
+def scale_invariant_loss(pred, target, alpha=0.5):
+    """
+    Scale-invariant loss for depth estimation
+    As described in Eigen et al. 2014 "Depth Map Prediction..."
+    """
+    # Convert to log space
+    pred_log = torch.log(pred + 1e-6)
+    target_log = torch.log(target + 1e-6)
+    
+    # Compute difference in log space
+    diff = pred_log - target_log
+    
+    # First term: mean squared error in log space
+    loss1 = torch.mean(diff ** 2)
+    
+    # Second term: variance regularization
+    loss2 = alpha * ((torch.sum(diff) ** 2) / (diff.numel() ** 2))
+    
+    return loss1 - loss2
+
+def abs_relative_error(pred, target, mask=None):
+    """
+    pred, target: torch.Tensor of shape [B, H, W]
+    mask: optional boolean mask where target > 0
+    """
+    if mask is None:
+        mask = (target > 0)
+    pred = pred[mask]
+    target = target[mask]
+    return torch.mean(torch.abs(pred - target) / (target + 1e-6))
 
 def run_stage(image_dir, depth_dir, model, stage_name, lr=1e-3, batch_size=8, epochs=5, ckpt_path=None, is_blender=True):
     print(f"\n--- Training {stage_name} ---")
@@ -253,7 +344,9 @@ def run_stage(image_dir, depth_dir, model, stage_name, lr=1e-3, batch_size=8, ep
     print(device)
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    criterion = nn.MSELoss()
+    # criterion = nn.MSELoss()
+    criterion = scale_invariant_loss
+    # criterion = abs_relative_error
 
     if ckpt_path and os.path.exists(ckpt_path):
         model.load_state_dict(torch.load(ckpt_path))
